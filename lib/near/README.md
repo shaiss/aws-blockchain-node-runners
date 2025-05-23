@@ -87,6 +87,36 @@ If you **cannot** or **do not want to** provide AWS credentials, you have two op
 2. Refactor the stacks to **avoid look-ups** (pass VPC/Subnet IDs via environment variables or config).  This is outside the default blueprint scope but the code is structured so you can replace `Vpc.fromLookup` with `Vpc.fromVpcAttributes` if needed.
 
 ---
+## 6  Architecture Overview
+
+### 6.1  Single-Node Deployment
+![Single Node Diagram](./doc/assets/Architecture-SingleNode.drawio.png)
+*One EC2 instance in the default VPC, security-group rules open NEAR P2P (24567) + internal RPC (3030).*  
+Used for development or low-traffic private workloads.
+
+### 6.2  HA (RPC Farm) Deployment
+![HA Nodes Diagram](./doc/assets/Architecture-HANodes.drawio.png)
+*Auto Scaling Group (up to 4 nodes) behind an internal Application Load Balancer; ALB listens on port 3030; nodes share identical user-data and CW dashboards.*
+
+---
+## 7  Optimizing Data-Transfer Costs
+NEAR RPC nodes can emit **tens of terabytes** of outbound traffic each month.  Consider:
+1.  Using the `LIMIT_OUT_TRAFFIC_MBPS` setting (see `.env`) to rate-limit egress once the node is in sync. 20 Mbit/s ≈ 6 TiB/month.
+2.  Keeping the RPC endpoint **private** (inside the VPC) and fronting it with your own cache or API gateway.
+3.  Exploring AWS **PrivateLink** or **Gateway Load Balancer** for multi-VPC access without Internet egress charges.
+
+---
+## 8  Well-Architected Checklist (excerpt)
+| Pillar | Control | Check | Remarks |
+|--------|---------|-------|---------|
+| Security | Network isolation | RPC exposed only on internal ALB | Modify SG/ALB if public access is required |
+| Reliability | ASG & ALB | HA stack deploys up to 4 nodes with health checks | desiredCapacity is user-configurable |
+| Cost Opt | Egress limits | Use `LIMIT_OUT_TRAFFIC_MBPS` | Potential >80 % savings |
+| Perf Eff | Graviton | Default instance type `m7g` for best price/perf | Override in `.env` if x86 is required |
+
+*(See `doc/` folder for the complete table.)*
+
+---
 ### Useful Links
 * AWS CDK docs – [Environment-Agnostic Stacks](https://docs.aws.amazon.com/cdk/latest/guide/environments.html#environments_env_agnostic)
 * AWS CDK docs – [Sharing & Reusing Context](https://docs.aws.amazon.com/cdk/latest/guide/context.html#context-sharing)
