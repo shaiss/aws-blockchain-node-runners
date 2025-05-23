@@ -70,6 +70,32 @@
 - [x] Add "Optimizing Data Transfer Costs" subsection similar to Solana but NEAR-specific.
 - [x] Add Well-Architected checklist table covering Security, Cost, Reliability, etc. (excerpt + placeholder for full table).
 
+## 11. Secrets Manager Assessment
+- [x] Reviewed NEAR RPC documentation - no API keys or secrets required for RPC node operation
+- [x] Analyzed Solana implementation - SecretsManagerReadWrite policy is included but not actually used
+- [x] **Decision**: AWS Secrets Manager is NOT needed for NEAR nodes as they don't require:
+  - API keys for node operation
+  - Private keys (nodes generate their own if needed)
+  - Authentication tokens for RPC access
+  - Any other sensitive configuration data
+- [ ] Consider removing SecretsManagerReadWrite policy from common-stack.ts to follow least privilege
+
+## 12. CloudWatch Dashboard Implementation
+- [x] Create `lib/constructs/node-cw-dashboard.ts` with NEAR-specific metrics:
+  - Standard EC2 metrics (CPU, Memory, Network, Disk I/O)
+  - NEAR-specific metrics:
+    - Block height (`near_block_height`)
+    - Sync status (`near_sync_status`)
+    - Peer count (`near_peer_count`)
+    - Transaction pool size (`near_tx_pool_size`)
+- [x] Add CloudWatch dashboard to single-node-stack.ts
+- [x] Add CloudWatch dashboard to rpc-nodes-stack.ts (multi-instance view)
+- [x] Configure CloudWatch agent in user-data script to collect NEAR metrics
+- [x] Add dashboard JSON template similar to Solana/Ethereum patterns
+- [x] Create CloudWatch agent configuration file (amazon-cloudwatch-agent.json)
+- [x] Create NEAR metrics collection script (collect-near-metrics.sh)
+- [x] Add health check endpoint on port 8080 for ALB health checks
+
 ---
 
 Generated: 2025-05-23 

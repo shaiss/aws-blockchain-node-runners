@@ -167,7 +167,92 @@ systemctl enable --now near.service
 ###############################
 # CloudWatch Agent (optional) #
 ###############################
-/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c default -s || true
+log "Configuring CloudWatch Agent"
+
+# Copy CloudWatch agent config from S3
+aws s3 cp "${ASSETS_S3_PATH}/amazon-cloudwatch-agent.json" /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+
+# Start CloudWatch agent
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+    -a fetch-config \
+    -m ec2 \
+    -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json \
+    -s || true
+
+# Copy and set up NEAR metrics collection script
+aws s3 cp "${ASSETS_S3_PATH}/collect-near-metrics.sh" /usr/local/bin/collect-near-metrics.sh
+chmod +x /usr/local/bin/collect-near-metrics.sh
+
+# Set up cron job to collect NEAR metrics every minute
+cat >/etc/cron.d/near-metrics <<CRON
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+* * * * * root /usr/local/bin/collect-near-metrics.sh >> /var/log/near-metrics.log 2>&1
+CRON
+
+# Create simple health check endpoint
+cat >/usr/local/bin/near-health-server.py <<'HEALTH'
+#!/usr/bin/env python3
+import http.server
+import socketserver
+import json
+import subprocess
+import os
+
+PORT = 8080
+
+class HealthHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/status' or self.path == '/health':
+            try:
+                # Check if NEAR service is running
+                result = subprocess.run(['systemctl', 'is-active', 'near.service'], 
+                                      capture_output=True, text=True)
+                is_running = result.returncode == 0
+                
+                self.send_response(200 if is_running else 503)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                
+                response = {
+                    'status': 'healthy' if is_running else 'unhealthy',
+                    'service': 'near',
+                    'running': is_running
+                }
+                self.wfile.write(json.dumps(response).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': str(e)}).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+with socketserver.TCPServer(("", PORT), HealthHandler) as httpd:
+    httpd.serve_forever()
+HEALTH
+
+chmod +x /usr/local/bin/near-health-server.py
+
+# Create systemd service for health endpoint
+cat >/etc/systemd/system/near-health.service <<SERVICE
+[Unit]
+Description=NEAR Health Check Endpoint
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/near-health-server.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+systemctl daemon-reload
+systemctl enable --now near-health.service
 
 ###############################
 # CloudFormation / ASG hooks  #

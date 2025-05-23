@@ -1,0 +1,125 @@
+{
+  "agent": {
+    "metrics_collection_interval": 60,
+    "run_as_user": "cwagent"
+  },
+  "metrics": {
+    "namespace": "CWAgent",
+    "metrics_collected": {
+      "cpu": {
+        "measurement": [
+          {
+            "name": "cpu_usage_iowait",
+            "rename": "CPU_USAGE_IOWAIT",
+            "unit": "Percent"
+          }
+        ],
+        "metrics_collection_interval": 60,
+        "totalcpu": false
+      },
+      "disk": {
+        "measurement": [
+          {
+            "name": "used_percent",
+            "rename": "DISK_USED_PERCENT",
+            "unit": "Percent"
+          }
+        ],
+        "metrics_collection_interval": 60,
+        "resources": [
+          "/near"
+        ]
+      },
+      "diskio": {
+        "measurement": [
+          {
+            "name": "write_bytes",
+            "rename": "DISK_WRITE_BYTES",
+            "unit": "Bytes"
+          },
+          {
+            "name": "read_bytes",
+            "rename": "DISK_READ_BYTES",
+            "unit": "Bytes"
+          },
+          {
+            "name": "writes",
+            "rename": "DISK_WRITES",
+            "unit": "Count"
+          },
+          {
+            "name": "reads",
+            "rename": "DISK_READS",
+            "unit": "Count"
+          },
+          {
+            "name": "write_time",
+            "rename": "DISK_WRITE_TIME",
+            "unit": "Milliseconds"
+          },
+          {
+            "name": "read_time",
+            "rename": "DISK_READ_TIME",
+            "unit": "Milliseconds"
+          }
+        ],
+        "metrics_collection_interval": 60,
+        "resources": [
+          "xvdb",
+          "xvdf"
+        ]
+      },
+      "mem": {
+        "measurement": [
+          {
+            "name": "mem_used_percent",
+            "rename": "MEM_USED_PERCENT",
+            "unit": "Percent"
+          }
+        ],
+        "metrics_collection_interval": 60
+      },
+      "netstat": {
+        "measurement": [
+          {
+            "name": "tcp_established",
+            "rename": "TCP_ESTABLISHED",
+            "unit": "Count"
+          }
+        ],
+        "metrics_collection_interval": 60
+      },
+      "procstat": [
+        {
+          "pattern": "near",
+          "measurement": [
+            {
+              "name": "cpu_usage",
+              "rename": "NEAR_CPU_USAGE",
+              "unit": "Percent"
+            },
+            {
+              "name": "memory_rss",
+              "rename": "NEAR_MEMORY_RSS",
+              "unit": "Bytes"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/near/*/near.log",
+            "log_group_name": "/aws/ec2/near",
+            "log_stream_name": "{instance_id}",
+            "retention_in_days": 7
+          }
+        ]
+      }
+    }
+  }
+} 

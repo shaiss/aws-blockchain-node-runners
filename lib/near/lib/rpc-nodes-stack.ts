@@ -3,6 +3,7 @@ import * as constructs from "constructs";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as s3Assets from "aws-cdk-lib/aws-s3-assets";
+import * as cw from 'aws-cdk-lib/aws-cloudwatch';
 import * as nag from "cdk-nag";
 import * as path from "path";
 import * as fs from "fs";
@@ -10,6 +11,7 @@ import * as configTypes from "./config/node-config.interface";
 import { NearNodeSecurityGroupConstruct } from "./constructs/near-node-security-group";
 import { HANodesConstruct } from "../../constructs/ha-rpc-nodes-with-alb";
 import * as constants from "../../constructs/constants";
+import * as nodeCwDashboard from "./constructs/node-cw-dashboard";
 
 export interface NearRpcNodesStackProps extends cdk.StackProps {
     instanceType: ec2.InstanceType;
@@ -105,6 +107,19 @@ export class NearRpcNodesStack extends cdk.Stack {
             heartBeatDelayMin,
             lifecycleHookName,
             autoScalingGroupName,
+        });
+
+        // Adding CloudWatch dashboard for multiple RPC nodes
+        // Note: For HA setup, we'll create a dashboard that can monitor multiple instances
+        const dashboardString = cdk.Fn.sub(JSON.stringify(nodeCwDashboard.SingleNodeCWDashboardJSON), {
+            INSTANCE_ID: "*",  // Wildcard to show all instances in the ASG
+            INSTANCE_NAME: STACK_NAME,
+            REGION: REGION,
+        });
+
+        new cw.CfnDashboard(this, 'rpc-nodes-cw-dashboard', {
+            dashboardName: `${STACK_NAME}-rpc-nodes`,
+            dashboardBody: dashboardString,
         });
 
         new cdk.CfnOutput(this, "alb-url", {

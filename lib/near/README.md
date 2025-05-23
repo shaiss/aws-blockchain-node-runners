@@ -15,6 +15,7 @@ Provision NEAR RPC and single nodes on AWS using a reusable, production-grade CD
   - [Architecture Overview](#architecture-overview)
     - [Single-Node Deployment](#single-node-deployment)
     - [HA (RPC Farm) Deployment](#ha-rpc-farm-deployment)
+  - [CloudWatch Monitoring](#cloudwatch-monitoring)
   - [Optimizing Data Transfer Costs](#optimizing-data-transfer-costs)
   - [Well-Architected Checklist](#well-architected-checklist)
   - [Useful Links](#useful-links)
@@ -136,6 +137,39 @@ If you **cannot** or **do not want to** provide AWS credentials:
 
 *Auto Scaling Group (up to 4 nodes) behind an internal Application Load Balancer. ALB listens on port 3030. Nodes share identical user-data and CloudWatch dashboards.*
 
+## CloudWatch Monitoring
+
+This blueprint includes comprehensive CloudWatch monitoring for your NEAR nodes:
+
+### Metrics Collected
+
+**System Metrics** (via CloudWatch Agent):
+- CPU utilization and IO wait
+- Memory usage
+- Network traffic (in/out)
+- Disk I/O metrics (reads/writes, throughput, latency)
+- Disk usage percentage
+
+**NEAR-Specific Metrics** (collected every minute):
+- `near_block_height` - Current blockchain height
+- `near_sync_status` - Node sync status (1=synced, 0=syncing)
+- `near_peer_count` - Number of connected peers
+
+### CloudWatch Dashboards
+
+Both single-node and HA deployments automatically create CloudWatch dashboards with:
+- Real-time visualization of all metrics
+- Multi-instance view for HA deployments
+- Automatic instance discovery
+
+### Health Checks
+
+- Health endpoint available on port 8080 (`/status` or `/health`)
+- Used by Application Load Balancer for automatic instance replacement
+- Returns JSON status of NEAR service
+
+> **Note:** NEAR-specific metrics require the RPC endpoint to be available, which typically takes a few minutes after node startup.
+
 ## Optimizing Data Transfer Costs
 
 NEAR RPC nodes can emit **tens of terabytes** of outbound traffic each month. Consider:
@@ -163,7 +197,7 @@ This is the Well-Architected checklist for NEAR nodes implementation of the AWS 
 |                         | Cost awareness                    | Estimate costs                                                                   | Single RPC node with `m7g.2xlarge` and EBS gp3 volumes will cost approximately $500-800 per month in US East (N. Virginia) region with On-Demand pricing. Data transfer costs can add $500-2000+ per month for high-traffic RPC nodes. Use [AWS Pricing Calculator](https://calculator.aws/) for estimates. |
 | Reliability             | Resiliency implementation         | Withstand component failures                                                     | This solution uses AWS Application Load Balancer with RPC nodes for high availability. Auto Scaling can replace failed instances automatically. |
 |                         | Data backup                       | How is data backed up?                                                           | Blockchain data is replicated by nodes automatically. NEAR nodes can sync from network within hours, so no additional backup mechanisms are implemented. |
-|                         | Resource monitoring               | How are workload resources monitored?                                            | Resources are monitored using Amazon CloudWatch dashboards. Custom metrics are pushed via CloudWatch Agent. |
+|                         | Resource monitoring               | How are workload resources monitored?                                            | Resources are monitored using Amazon CloudWatch dashboards with custom NEAR-specific metrics (block height, sync status, peer count). CloudWatch Agent collects system metrics every 60 seconds. Health checks on port 8080 enable automatic failure detection. |
 | Performance efficiency  | Compute selection                 | How is compute solution selected?                                                | Compute solution is selected based on best price-performance, i.e. AWS Graviton-based Amazon EC2 instances. |
 |                         | Storage selection                 | How is storage solution selected?                                                | Storage solution uses gp3 Amazon EBS volumes with optimal IOPS and throughput for best price-performance. |
 |                         | Architecture selection            | How is the best performance architecture selected?                               | We used recommendations from the NEAR community and AWS best practices for blockchain workloads. |

@@ -11,6 +11,7 @@ import { SingleNodeConstruct } from "../../constructs/single-node";
 import * as configTypes from "./config/node-config.interface";
 import * as constants from "../../constructs/constants";
 import { NearNodeSecurityGroupConstruct } from "./constructs/near-node-security-group";
+import * as nodeCwDashboard from "./constructs/node-cw-dashboard";
 // TODO: Implement NEAR CloudWatch dashboard JSON or remove
 
 export interface NearSingleNodeStackProps extends cdk.StackProps {
@@ -101,7 +102,18 @@ export class NearSingleNodeStack extends cdk.Stack {
         });
         node.instance.addUserData(modifiedScript);
 
-        // TODO: Add CloudWatch dashboard JSON similar to others
+        // Adding CloudWatch dashboard to the node
+        const dashboardString = cdk.Fn.sub(JSON.stringify(nodeCwDashboard.SingleNodeCWDashboardJSON), {
+            INSTANCE_ID: node.instanceId,
+            INSTANCE_NAME: STACK_NAME,
+            REGION: REGION,
+        });
+
+        new cw.CfnDashboard(this, 'single-cw-dashboard', {
+            dashboardName: `${STACK_NAME}-${node.instanceId}`,
+            dashboardBody: dashboardString,
+        });
+
         new cdk.CfnOutput(this, "node-instance-id", {
             value: node.instanceId,
         });
