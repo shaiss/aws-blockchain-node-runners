@@ -7,9 +7,15 @@ This blueprint provisions the AWS infrastructure required to run **NEAR RPC and/
 
 1. **Node.js ≥ 18** and **npm** installed.
 2. **AWS CDK v2** (you can also use `npx cdk`).
-3. **AWS credentials** with permission to:
-   * describe VPCs/Subnets/Security-Groups (for look-ups)
-   * create the resources defined in the stacks (EC2, Auto Scaling, IAM, etc.).
+3. **AWS credentials** exported in your shell *or* configured via `aws configure`.
+   ```bash
+   # Example using temporary credentials
+   export AWS_ACCESS_KEY_ID=AKIA...               # required
+   export AWS_SECRET_ACCESS_KEY=xxxxxxxxxxxxxxxx  # required
+   export AWS_SESSION_TOKEN=yyyyyyyyyyyyyyyyyyy   # only if using STS/temp creds
+   export AWS_REGION=us-east-1                    # region can also be placed in .env or AWS config
+   ```
+   If you use named profiles, set `AWS_PROFILE=myprofile` instead.
 
 > ℹ️ The CDK stacks perform look-ups (e.g. the default VPC) at *synth* time. You therefore must have credentials configured **even to run `cdk synth`**. This is identical to the Ethereum/Solana blueprints.
 
@@ -34,10 +40,20 @@ $ $EDITOR .env          # customise values (network, instance size, etc.)
 # Compile the TypeScript code
 $ npm run build
 
+# (First-time only) bootstrap your AWS environment
+# If AWS_ACCOUNT_ID / AWS_REGION are exported you can pass them explicitly, otherwise CDK infers them from your credentials.
+$ npx cdk bootstrap | tee bootstrap.log
+
 # Synthesize CloudFormation templates (requires AWS creds!)
-$ npm run synth   # or: npx cdk synth
+$ npm run synth   # or: npx cdk synth | tee synth.log
 ```
 The synthesized templates will be printed to the console and written to `cdk.out/`.
+
+---
+## 3a  Mock-Deployment / Template Review Only
+If you only want to **generate** the CloudFormation templates and inspect them without provisioning anything yet, simply run the *build* + *bootstrap* + *synth* steps above.  The rendered templates are written to `cdk.out/` and no resources are deployed.
+
+When you're ready to deploy for real, proceed to the next section.
 
 ---
 ## 3  Deploying
