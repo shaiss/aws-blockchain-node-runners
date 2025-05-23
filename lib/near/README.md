@@ -146,13 +146,29 @@ NEAR RPC nodes can emit **tens of terabytes** of outbound traffic each month. Co
 
 ## Well-Architected Checklist
 
-| Pillar      | Control            | Check                                         | Remarks                                 |
-|-------------|--------------------|-----------------------------------------------|-----------------------------------------|
-| Security    | Network isolation  | RPC exposed only on internal ALB              | Modify SG/ALB if public access required |
-| Reliability | ASG & ALB          | HA stack deploys up to 4 nodes with health checks | desiredCapacity is user-configurable    |
-| Cost Opt    | Egress limits      | Use `LIMIT_OUT_TRAFFIC_MBPS`                  | Potential >80% savings                  |
-| Perf Eff    | Graviton           | Default instance type `m7g` for best price/perf | Override in `.env` if x86 is required   |
+This is the Well-Architected checklist for NEAR nodes implementation of the AWS Blockchain Node Runner app. This checklist takes into account questions from the [AWS Well-Architected Framework](https://aws.amazon.com/architecture/well-architected/) which are relevant to this workload. Please feel free to add more checks from the framework if required for your workload.
 
+| Pillar                  | Control                           | Question/Check                                                                   | Remarks |
+|:------------------------|:----------------------------------|:---------------------------------------------------------------------------------|:--------|
+| Security                | Network protection                | Are there unnecessary open ports in security groups?                             | Please note that port 24567 (TCP/UDP) for NEAR is open to public to support P2P protocols. We rely on the protection mechanisms built into the NEAR node software to protect those ports. |
+|                         |                                   | Traffic inspection                                                               | Traffic protection is not used in the solution. AWS Web Applications Firewall (WAF) could be implemented for traffic inspection. Additional charges will apply. |
+|                         | Compute protection                | Reduce attack surface                                                            | This solution uses Amazon Linux 2023 AMI. You may choose to run hardening scripts on it. |
+|                         |                                   | Enable people to perform actions at a distance                                   | This solution uses AWS Systems Manager for terminal session, not ssh ports. |
+|                         | Data protection at rest           | Use encrypted Amazon Elastic Block Store (Amazon EBS) volumes                    | This solution uses encrypted Amazon EBS volumes. |
+|                         | Data protection in transit        | Use TLS                                                                          | The AWS Application Load balancer currently uses HTTP listener. Create HTTPS listener with self signed certificate if TLS is desired. |
+|                         | Authorization and access control  | Use instance profile with Amazon Elastic Compute Cloud (Amazon EC2) instances    | This solution uses AWS Identity and Access Management (AWS IAM) role instead of IAM user. |
+|                         |                                   | Following principle of least privilege access                                    | In all node types, root user is not used (using special user "ec2-user" instead). |
+|                         | Application security              | Security focused development practices                                           | cdk-nag is being used with appropriate suppressions. |
+| Cost optimization       | Service selection                 | Use cost effective resources                                                     | 1/ Graviton-based instances are used by default for best price/performance. 2/ Cost-effective EBS gp3 volumes are used. 3/ NEAR nodes can generate substantial outbound traffic - use LIMIT_OUT_TRAFFIC_MBPS to control costs. |
+|                         | Cost awareness                    | Estimate costs                                                                   | Single RPC node with `m7g.4xlarge` and EBS gp3 volumes will cost approximately $500-800 per month in US East (N. Virginia) region with On-Demand pricing. Data transfer costs can add $500-2000+ per month for high-traffic RPC nodes. Use [AWS Pricing Calculator](https://calculator.aws/) for estimates. |
+| Reliability             | Resiliency implementation         | Withstand component failures                                                     | This solution uses AWS Application Load Balancer with RPC nodes for high availability. Auto Scaling can replace failed instances automatically. |
+|                         | Data backup                       | How is data backed up?                                                           | Blockchain data is replicated by nodes automatically. NEAR nodes can sync from network within hours, so no additional backup mechanisms are implemented. |
+|                         | Resource monitoring               | How are workload resources monitored?                                            | Resources are monitored using Amazon CloudWatch dashboards. Custom metrics are pushed via CloudWatch Agent. |
+| Performance efficiency  | Compute selection                 | How is compute solution selected?                                                | Compute solution is selected based on best price-performance, i.e. AWS Graviton-based Amazon EC2 instances. |
+|                         | Storage selection                 | How is storage solution selected?                                                | Storage solution uses gp3 Amazon EBS volumes with optimal IOPS and throughput for best price-performance. |
+|                         | Architecture selection            | How is the best performance architecture selected?                               | We used recommendations from the NEAR community and AWS best practices for blockchain workloads. |
+| Operational excellence  | Workload health                   | How is health of workload determined?                                            | Health is determined via AWS Application Load Balancer Target Group Health Checks on port 3030. |
+| Sustainability          | Hardware & services               | Select most efficient hardware for your workload                                 | The solution uses AWS Graviton-based Amazon EC2 instances which offer the best performance per watt of energy use in Amazon EC2. |
 
 ## Useful Links
 
