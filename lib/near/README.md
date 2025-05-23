@@ -1,126 +1,165 @@
 # NEAR Node Runner Blueprint (AWS CDK)
 
-This blueprint provisions the AWS infrastructure required to run **NEAR RPC and/or single nodes** on Amazon EC2.  It follows the same conventions as the Ethereum, Solana, and other blueprints in this repository.
+Provision NEAR RPC and single nodes on AWS using a reusable, production-grade CDK blueprint. This follows the conventions of the Ethereum, Solana, and other blueprints in this repository.
+
+## Table of Contents
+- [NEAR Node Runner Blueprint (AWS CDK)](#near-node-runner-blueprint-aws-cdk)
+  - [Table of Contents](#table-of-contents)
+  - [Overview](#overview)
+  - [Prerequisites](#prerequisites)
+  - [Setup Instructions](#setup-instructions)
+  - [Mock Deployment (Template Review)](#mock-deployment-template-review)
+  - [Deploying to AWS](#deploying-to-aws)
+  - [Cleaning Up](#cleaning-up)
+  - [Synth Without Credentials](#synth-without-credentials)
+  - [Architecture Overview](#architecture-overview)
+    - [Single-Node Deployment](#single-node-deployment)
+    - [HA (RPC Farm) Deployment](#ha-rpc-farm-deployment)
+  - [Optimizing Data Transfer Costs](#optimizing-data-transfer-costs)
+  - [Well-Architected Checklist](#well-architected-checklist)
+  - [Useful Links](#useful-links)
 
 ---
-## 1  Prerequisites
 
-1. **Node.js ≥ 18** and **npm** installed.
-2. **AWS CDK v2** (you can also use `npx cdk`).
-3. **AWS credentials** exported in your shell *or* configured via `aws configure`.
+## Overview
+
+This blueprint provisions the AWS infrastructure required to run **NEAR RPC and/or single nodes** on Amazon EC2. It is designed for both development and production, supporting single-node and highly available (HA) deployments. The blueprint follows best practices for security, cost, and operational excellence, and is modeled after the Ethereum, Solana, and BSC blueprints in this repository.
+
+## Prerequisites
+
+- **Node.js ≥ 18** and **npm**
+- **AWS CDK v2** (`npm install -g aws-cdk` or use `npx cdk`)
+- **AWS credentials** exported in your shell *or* configured via `aws configure`:
+
+```bash
+export AWS_ACCESS_KEY_ID=AKIA...               # required
+export AWS_SECRET_ACCESS_KEY=xxxxxxxxxxxxxxxx  # required
+export AWS_SESSION_TOKEN=yyyyyyyyyyyyyyyyyyy   # only if using STS/temp creds
+export AWS_REGION=us-east-1                    # region can also be placed in .env or AWS config
+```
+
+If you use named profiles:
+```bash
+export AWS_PROFILE=myprofile
+```
+
+> **Note:** CDK stacks perform lookups (e.g., default VPC) at *synth* time. You must have credentials configured **even to run `cdk synth`**.
+
+## Setup Instructions
+
+Follow these steps to prepare your environment:
+
+1. **Clone the repository and install dependencies**
+
    ```bash
-   # Example using temporary credentials
-   export AWS_ACCESS_KEY_ID=AKIA...               # required
-   export AWS_SECRET_ACCESS_KEY=xxxxxxxxxxxxxxxx  # required
-   export AWS_SESSION_TOKEN=yyyyyyyyyyyyyyyyyyy   # only if using STS/temp creds
-   export AWS_REGION=us-east-1                    # region can also be placed in .env or AWS config
+   git clone https://github.com/aws-samples/aws-blockchain-node-runners.git
+   cd aws-blockchain-node-runners
+   npm install
    ```
-   If you use named profiles, set `AWS_PROFILE=myprofile` instead.
 
-> ℹ️ The CDK stacks perform look-ups (e.g. the default VPC) at *synth* time. You therefore must have credentials configured **even to run `cdk synth`**. This is identical to the Ethereum/Solana blueprints.
+2. **Enter the NEAR blueprint directory**
 
----
-## 2  Getting Started
+   ```bash
+   cd lib/near
+   ```
 
-```bash
-# Clone the repository (if you haven't already)
-$ git clone https://github.com/aws-samples/aws-blockchain-node-runners.git
-$ cd aws-blockchain-node-runners
+3. **Configure your environment**
 
-# Install root dependencies (one level up from lib/near)
-$ npm install
+   Copy the sample environment file and edit it to customize values (network, instance size, etc.):
 
-# Enter the NEAR blueprint folder
-$ cd lib/near
+   ```bash
+   cp .env-sample .env
+   $EDITOR .env
+   ```
 
-# Create your environment file
-$ cp .env-sample .env
-$ $EDITOR .env          # customise values (network, instance size, etc.)
+4. **Build and prepare**
 
-# Compile the TypeScript code
-$ npm run build
+   ```bash
+   npm run build
+   npx cdk bootstrap
+   npx cdk synth
+   ```
 
-# (First-time only) bootstrap your AWS environment
-# If AWS_ACCOUNT_ID / AWS_REGION are exported you can pass them explicitly, otherwise CDK infers them from your credentials.
-$ npx cdk bootstrap | tee bootstrap.log
+After completing these setup steps, choose one of the deployment options below.
 
-# Synthesize CloudFormation templates (requires AWS creds!)
-$ npm run synth   # or: npx cdk synth | tee synth.log
-```
-The synthesized templates will be printed to the console and written to `cdk.out/`.
+## Mock Deployment (Template Review)
 
----
-## 3a  Mock-Deployment / Template Review Only
-If you only want to **generate** the CloudFormation templates and inspect them without provisioning anything yet, simply run the *build* + *bootstrap* + *synth* steps above.  The rendered templates are written to `cdk.out/` and no resources are deployed.
+If you only want to **review CloudFormation templates** without deploying resources, the `npx cdk synth` command from step 4 above generates templates in `cdk.out/` with **no resources deployed**.
 
-When you're ready to deploy for real, proceed to the next section.
+## Deploying to AWS
 
----
-## 3  Deploying
+After completing the setup steps above:
 
-```bash
-# Deploy the common stack first (shared IAM role, etc.)
-$ npx cdk deploy near-common
+1. **Deploy common resources**
+   ```bash
+   npx cdk deploy near-common
+   ```
 
-# Deploy a single node *or* an HA RPC farm, depending on DEPLOY_MODE
-$ npx cdk deploy near-single-node
-# —or—
-$ npx cdk deploy near-rpc-nodes
-```
-If `DEPLOY_MODE=both` in your `.env`, you can deploy both stacks.
+2. **Deploy your node configuration**
+   ```bash
+   # Single node
+   npx cdk deploy near-single-node
+   
+   # OR HA setup
+   npx cdk deploy near-rpc-nodes
+   ```
 
----
-## 4  Cleaning Up
+   **Note:** Your deployment choice depends on the `DEPLOY_MODE` setting in `.env`.
+
+## Cleaning Up
 
 ```bash
-$ npx cdk destroy near-rpc-nodes     # or near-single-node
-$ npx cdk destroy near-common
+npx cdk destroy near-rpc-nodes     # or near-single-node
+npx cdk destroy near-common
 ```
-Remember to remove EBS volumes or S3 snapshots if you created any outside of CDK.
+
+> **Remember:** Remove EBS volumes or S3 snapshots if you created any outside of CDK.
+
+## Synth Without Credentials
+
+If you **cannot** or **do not want to** provide AWS credentials:
+
+1. Pre-populate `cdk.context.json` with lookup results from an environment that *does* have credentials. CDK will then use cached context and not make live AWS calls.
+2. Refactor the stacks to **avoid lookups** (pass VPC/Subnet IDs via env vars or config). The code is structured so you can replace `Vpc.fromLookup` with `Vpc.fromVpcAttributes` if needed.
+
+## Architecture Overview
+
+### Single-Node Deployment
+
+![Single Node Diagram](./doc/assets/diagram_6cce0f44.png)
+
+*One EC2 instance in the default VPC. Security group rules open NEAR P2P (24567) + internal RPC (3030). Used for development or low-traffic private workloads.*
+
+### HA (RPC Farm) Deployment
+
+![HA Nodes Diagram](./doc/assets/diagram_4fbe9d0c.png)
+
+*Auto Scaling Group (up to 4 nodes) behind an internal Application Load Balancer. ALB listens on port 3030. Nodes share identical user-data and CloudWatch dashboards.*
+
+## Optimizing Data Transfer Costs
+
+NEAR RPC nodes can emit **tens of terabytes** of outbound traffic each month. Consider:
+
+- Using the `LIMIT_OUT_TRAFFIC_MBPS` setting (see `.env`) to rate-limit egress once the node is in sync. 20 Mbit/s ≈ 6 TiB/month.
+- Keeping the RPC endpoint **private** (inside the VPC) and fronting it with your own cache or API gateway.
+- Exploring AWS **PrivateLink** or **Gateway Load Balancer** for multi-VPC access without Internet egress charges.
+
+## Well-Architected Checklist
+
+| Pillar      | Control            | Check                                         | Remarks                                 |
+|-------------|--------------------|-----------------------------------------------|-----------------------------------------|
+| Security    | Network isolation  | RPC exposed only on internal ALB              | Modify SG/ALB if public access required |
+| Reliability | ASG & ALB          | HA stack deploys up to 4 nodes with health checks | desiredCapacity is user-configurable    |
+| Cost Opt    | Egress limits      | Use `LIMIT_OUT_TRAFFIC_MBPS`                  | Potential >80% savings                  |
+| Perf Eff    | Graviton           | Default instance type `m7g` for best price/perf | Override in `.env` if x86 is required   |
+
+
+## Useful Links
+
+- [AWS CDK docs – Environment-Agnostic Stacks](https://docs.aws.amazon.com/cdk/latest/guide/environments.html#environments_env_agnostic)
+- [AWS CDK docs – Sharing & Reusing Context](https://docs.aws.amazon.com/cdk/latest/guide/context.html#context-sharing)
+- [NEAR node documentation](https://github.com/near/node-docs)
 
 ---
-## 5  Advanced: Synth Without Credentials
 
-If you **cannot** or **do not want to** provide AWS credentials, you have two options:
-
-1. Pre-populate `cdk.context.json` with the lookup results from an environment that *does* have credentials.  CDK will then use that cached context and will not make live AWS calls.
-2. Refactor the stacks to **avoid look-ups** (pass VPC/Subnet IDs via environment variables or config).  This is outside the default blueprint scope but the code is structured so you can replace `Vpc.fromLookup` with `Vpc.fromVpcAttributes` if needed.
-
----
-## 6  Architecture Overview
-
-### 6.1  Single-Node Deployment
-![Single Node Diagram](./doc/assets/Architecture-SingleNode.drawio.png)
-*One EC2 instance in the default VPC, security-group rules open NEAR P2P (24567) + internal RPC (3030).*  
-Used for development or low-traffic private workloads.
-
-### 6.2  HA (RPC Farm) Deployment
-![HA Nodes Diagram](./doc/assets/Architecture-HANodes.drawio.png)
-*Auto Scaling Group (up to 4 nodes) behind an internal Application Load Balancer; ALB listens on port 3030; nodes share identical user-data and CW dashboards.*
-
----
-## 7  Optimizing Data-Transfer Costs
-NEAR RPC nodes can emit **tens of terabytes** of outbound traffic each month.  Consider:
-1.  Using the `LIMIT_OUT_TRAFFIC_MBPS` setting (see `.env`) to rate-limit egress once the node is in sync. 20 Mbit/s ≈ 6 TiB/month.
-2.  Keeping the RPC endpoint **private** (inside the VPC) and fronting it with your own cache or API gateway.
-3.  Exploring AWS **PrivateLink** or **Gateway Load Balancer** for multi-VPC access without Internet egress charges.
-
----
-## 8  Well-Architected Checklist (excerpt)
-| Pillar | Control | Check | Remarks |
-|--------|---------|-------|---------|
-| Security | Network isolation | RPC exposed only on internal ALB | Modify SG/ALB if public access is required |
-| Reliability | ASG & ALB | HA stack deploys up to 4 nodes with health checks | desiredCapacity is user-configurable |
-| Cost Opt | Egress limits | Use `LIMIT_OUT_TRAFFIC_MBPS` | Potential >80 % savings |
-| Perf Eff | Graviton | Default instance type `m7g` for best price/perf | Override in `.env` if x86 is required |
-
-*(See `doc/` folder for the complete table.)*
-
----
-### Useful Links
-* AWS CDK docs – [Environment-Agnostic Stacks](https://docs.aws.amazon.com/cdk/latest/guide/environments.html#environments_env_agnostic)
-* AWS CDK docs – [Sharing & Reusing Context](https://docs.aws.amazon.com/cdk/latest/guide/context.html#context-sharing)
-* NEAR node documentation – <https://github.com/near/node-docs>
-
----
 © 2025 AWS Samples – Licensed under the Apache 2.0 License 
