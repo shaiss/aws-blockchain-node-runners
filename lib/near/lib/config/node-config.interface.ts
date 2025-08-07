@@ -13,7 +13,6 @@ export interface NearBaseNodeConfig extends configTypes.BaseNodeConfig {
     nearNetwork: NearNetwork;
     nearVersion: string;
     dataVolume: NearDataVolumeConfig;
-    snapshotUrl?: string;
     limitOutTrafficMbps: number;
 }
 

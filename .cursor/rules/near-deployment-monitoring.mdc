@@ -1,0 +1,127 @@
+---
+description: NEAR blockchain deployment monitoring and SSM debugging patterns
+---
+
+# NEAR Deployment Monitoring & SSM Debugging Guide
+
+## Core Monitoring Commands
+
+### Instance Health Check
+```bash
+aws ssm send-command --instance-ids INSTANCE_ID --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["echo \"=== NEAR HEALTH CHECK $(date) ===\"","ps aux | grep -E \"(near|setup|rust|cargo)\" | grep -v grep","df -h /near/mainnet","free -h | grep Mem","uptime"]' \
+  --timeout-seconds 30 --region us-east-1
+```
+
+### Compilation Progress Monitoring
+```bash
+aws ssm send-command --instance-ids INSTANCE_ID --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["echo \"=== COMPILATION PROGRESS ===\"","ps aux | grep -E \"(cargo|rustc)\" | grep -v grep | head -5","echo \"Log size: $(wc -c < /var/log/near-compile-absolute.log) bytes\"","tail -10 /var/log/near-compile-absolute.log"]' \
+  --timeout-seconds 45 --region us-east-1
+```
+
+### Volume Attachment Verification
+```bash
+aws ec2 describe-volumes --filters "Name=tag:aws:cloudformation:stack-name,Values=STACK_NAME" \
+  --query 'Volumes[*].[VolumeId,Size,State,Attachments[0].InstanceId,Attachments[0].Device,Attachments[0].State]' \
+  --output table --region us-east-1
+```
+
+## Critical Debugging Patterns
+
+### 1. Volume Attachment Issues
+**Symptoms**: Script stuck in device detection loop, no data volume visible
+**Check**: `lsblk`, `mount | grep nvme`, volume attachment status
+**Fix**: Manual attachment if shared construct fails
+
+### 2. Environment Variable Issues  
+**Symptoms**: "unbound variable" errors, script exits early
+**Check**: `env | grep -E "(AWS_REGION|NEAR)"`, `/etc/cdk_environment` existence
+**Fix**: Create environment file, export variables in script context
+
+### 3. Rust PATH Issues
+**Symptoms**: "cargo: not found", make compilation failures
+**Check**: `which cargo`, `/root/.cargo/bin/cargo --version`
+**Fix**: Use absolute paths `/root/.cargo/bin/cargo`, install Rust globally
+
+### 4. Git Tag Issues
+**Symptoms**: "pathspec 'v2.6.5' did not match any file(s) known to git"
+**Check**: `git tag | grep 2.6`, available tags in repository
+**Fix**: Use tag without 'v' prefix (e.g., `2.6.5` not `v2.6.5`)
+
+## Intervention Logging
+
+Always document interventions in [ai-intervened.md](mdc:lib/near/ai-intervened.md):
+
+```markdown
+### **HH:MM UTC - INTERVENTION: Description**
+
+**Problem**: Brief description of the issue
+**Symptoms**: What was observed
+**Root Cause**: Technical analysis  
+**Solution**: Steps taken to resolve
+**Status**: Success/Failure indicators
+```
+
+## CloudFormation Timeout Management
+
+**Default Timeout**: ~60 minutes for EC2 instance creation
+**NEAR Compilation**: 45-60+ minutes required
+**Solutions**:
+1. Send cfn-signal during compilation (not after)
+2. Extend CloudFormation CreationPolicy timeout
+3. Use separate compilation step after stack creation
+
+## Success Indicators
+
+### Volume Attachment Success
+- Data volume visible in `lsblk` as `/dev/nvme1n1` (1TB)
+- Successfully mounted at `/near/mainnet`
+- `df -h` shows 1007G available space
+
+### Compilation Success
+- Multiple rustc processes with 50%+ CPU usage
+- Log file growing steadily (>1000 lines, >30KB)
+- Compiling WASM/runtime components (cranelift, wasmtime)
+
+### System Health
+- Memory: <10GB used of 30GB available
+- CPU Load: <number of cores during heavy compilation
+- No stuck processes (same PID sleeping for >5 minutes)
+
+## Emergency Interventions
+
+### Process Stuck in Loop
+```bash
+# Identify stuck processes
+ps aux | grep -E "(near|setup)" | grep -v grep
+# Terminate if needed
+kill -TERM PID_NUMBER
+```
+
+### Manual Compilation Restart
+```bash
+# Create fixed script with absolute paths
+cd /near/mainnet/nearcore
+export PATH="/root/.cargo/bin:$PATH"
+nohup /root/.cargo/bin/cargo build -p neard --release > /var/log/manual-compile.log 2>&1 &
+```
+
+### Volume Manual Attachment
+```bash
+aws ec2 attach-volume --volume-id VOLUME_ID --instance-id INSTANCE_ID --device /dev/sdf --region us-east-1
+```
+
+## Performance Benchmarks
+
+**Expected Performance (m7a.2xlarge)**:
+- CPU: 70%+ utilization during compilation
+- Memory: 1-2GB per rustc process
+- Compilation Time: 45-60 minutes total
+- Log Growth: ~30KB in first 10 minutes
+
+**Red Flags**:
+- No CPU usage increase after 5 minutes
+- Zero log file growth
+- Processes in uninterruptible sleep (D state)
+- Memory usage >25GB

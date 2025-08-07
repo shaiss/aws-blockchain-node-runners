@@ -1,0 +1,158 @@
+# NEAR Multi-Stack Architecture Design (Phase 2)
+
+## Overview
+This design implements AWS best practices for lifecycle separation by splitting NEAR blockchain deployment into dedicated stacks. Each stack has clear ownership, timing, and operational requirements.
+
+## Architecture Stacks
+
+### 1. near-common-stack (Existing - Shared Resources)
+**Purpose**: Cross-stack shared resources and dependencies
+**Lifecycle**: Created once, rarely changes
+**Resources**:
+- IAM roles and policies for EC2 instances
+- Security groups with proper ingress/egress rules  
+- VPC configuration (if custom VPC needed)
+- S3 buckets for assets and logs
+- CloudWatch log groups
+
+**Outputs (Exported)**:
+- `NearNodeInstanceRoleArn` 
+- `NearNodeSecurityGroupId`
+- `NearAssetsS3BucketName`
+- `NearLogsS3BucketName`
+
+### 2. near-infrastructure-stack (Fast Deployment)
+**Purpose**: Infrastructure and NEAR compilation (60-minute target)  
+**Lifecycle**: Fast deployment, infrequent changes
+**Dependencies**: Imports from `near-common-stack`
+
+**Resources**:
+- EC2 instance (m7a.2xlarge, x86_64)
+- EBS data volume (1TB GP3, high IOPS/throughput)  
+- Volume attachment configuration
+- User data for infrastructure setup + compilation
+- CloudWatch agent configuration
+- Health check endpoint setup
+
+**User Data Scope**:
+- Package installation (AWS CLI, build tools, Rust)
+- Volume mounting and filesystem setup
+- NEAR binary compilation (45-60 minutes)
+- **cfn-signal sent after compilation complete**
+- Systemd service creation (but not started)
+
+**Outputs**:
+- `NearInstanceId`
+- `NearDataVolumeId` 
+- `NearPrivateIp`
+- `NearPublicIp`
+
+**Success Criteria**: Stack CREATE_COMPLETE in ~60 minutes
+
+### 3. near-sync-stack (Operational Management)
+**Purpose**: NEAR blockchain sync operations and monitoring
+**Lifecycle**: Independent operational deployments
+**Dependencies**: Imports from `near-infrastructure-stack`
+
+**Resources**:
+- SSM documents for NEAR lifecycle management
+- CloudWatch dashboards for sync monitoring
+- CloudWatch alarms for health alerts
+- Lambda functions for automation (optional)
+- SNS topics for notifications
+
+**SSM Documents**:
+- `near-start-sync`: Start NEAR blockchain sync
+- `near-stop-sync`: Gracefully stop NEAR service  
+- `near-health-check`: Comprehensive health validation
+- `near-sync-status`: Query sync progress and statistics
+
+**CloudWatch Monitoring**:
+- NEAR service status and uptime
+- Blockchain sync progress (height, peers, etc.)
+- System resources (CPU, memory, disk I/O)
+- Network connectivity and peer counts
+
+**Automation Capabilities**:
+- Start/stop sync operations via SSM
+- Health check scheduling and alerting
+- Automatic restart on service failures
+- Sync progress tracking and reporting
+
+## Implementation Benefits
+
+### Operational Excellence
+- **Fast Infrastructure Deployment**: ~60 minutes for EC2 + compilation
+- **Independent Operations**: Sync management without infrastructure changes
+- **Clear Responsibility**: Infrastructure vs blockchain operations
+- **Better Debugging**: Isolated failure domains
+
+### Cost Optimization  
+- **Infrastructure Reuse**: Multiple sync experiments on same instance
+- **Resource Optimization**: Right-size infrastructure vs operations
+- **Development Efficiency**: Test operations without full redeploy
+
+### Reliability
+- **Fault Isolation**: Infrastructure failures vs sync issues
+- **Independent Recovery**: Restart sync without infrastructure impact
+- **Better Monitoring**: Dedicated operational observability
+
+### Security
+- **Least Privilege**: Stack-specific IAM permissions
+- **Operational Boundaries**: Clear separation of concerns
+- **Audit Trail**: Stack-level change tracking
+
+## Migration Strategy
+
+### Phase 2A: Infrastructure Stack Separation
+1. Extract infrastructure components from current single stack
+2. Implement early cfn-signal pattern in infrastructure stack
+3. Validate infrastructure-only deployment completes in 60 minutes
+
+### Phase 2B: Sync Operations Stack  
+1. Create SSM documents for sync lifecycle management
+2. Build CloudWatch monitoring and alerting
+3. Implement operational automation via Lambda
+
+### Phase 2C: Integration & Testing
+1. End-to-end testing of multi-stack deployment
+2. Operational runbook development
+3. Production readiness validation
+
+## File Structure
+
+```
+lib/near/
+├── common-stack.ts          # Existing shared resources
+├── infrastructure-stack.ts  # EC2 + volumes + compilation (NEW)
+├── sync-operations-stack.ts # Sync management + monitoring (NEW)
+├── app.ts                   # Updated to deploy all 3 stacks
+└── lib/
+    ├── assets/
+    │   ├── user-data-infrastructure.sh  # Infrastructure-only script
+    │   └── ssm-documents/              # SSM automation scripts
+    └── constructs/
+        ├── near-monitoring.ts          # CloudWatch constructs
+        └── near-automation.ts          # SSM + Lambda constructs
+```
+
+## Success Metrics
+
+### Infrastructure Stack
+- ✅ Deployment completes in 60 minutes
+- ✅ NEAR binary compiled and tested
+- ✅ CloudFormation CREATE_COMPLETE status
+- ✅ Health check endpoint responding
+
+### Sync Operations Stack
+- ✅ SSM documents deployed and functional
+- ✅ CloudWatch monitoring active
+- ✅ NEAR sync can be started/stopped remotely
+- ✅ Comprehensive observability
+
+### Integration
+- ✅ End-to-end automation working
+- ✅ Independent stack lifecycle management
+- ✅ Production-ready operational capabilities
+
+This architecture provides a solid foundation for production NEAR blockchain infrastructure with proper AWS operational patterns.

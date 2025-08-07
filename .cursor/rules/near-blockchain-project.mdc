@@ -1,0 +1,196 @@
+---
+globs: lib/near/**/*
+description: NEAR blockchain node deployment project patterns and best practices
+---
+
+# NEAR Blockchain Node Runner Project
+
+This project deploys NEAR Protocol blockchain nodes on AWS using CDK. We focus exclusively on the `/lib/near` directory structure and follow established patterns.
+
+## Project Structure & Key Files
+
+### Core CDK Files
+- [lib/near/app.ts](mdc:lib/near/app.ts) - Main CDK application entry point
+- [lib/near/lib/single-node-stack.ts](mdc:lib/near/lib/single-node-stack.ts) - Single node deployment stack
+- [lib/near/lib/common-stack.ts](mdc:lib/near/lib/common-stack.ts) - Shared resources (IAM roles, security groups)
+- [lib/near/.env](mdc:lib/near/.env) - Environment configuration (created from .env-sample)
+
+### Bootstrap Scripts
+- [lib/near/lib/assets/user-data-ubuntu.sh](mdc:lib/near/lib/assets/user-data-ubuntu.sh) - **PRIMARY** Ubuntu 24.04 LTS bootstrap script
+- [lib/near/lib/assets/](mdc:lib/near/lib/assets/) - CloudWatch configs and other assets
+
+### Configuration & Documentation  
+- [lib/near/doc/run-rpc-node-without-nearup.md](mcd:lib/near/doc/run-rpc-node-without-nearup.md) - NEAR official documentation requirements
+- [lib/near/sample-configs/](mdc:lib/near/sample-configs/) - Environment templates
+
+## Established Patterns & Lessons Learned
+
+### ✅ Working Patterns (DO USE)
+
+#### Operating System & AMI
+```typescript
+// Ubuntu 24.04 LTS - REQUIRED for NEAR documentation compatibility
+let ubuntuStableImageSsmName = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+const machineImage = ec2.MachineImage.fromSsmParameter(ubuntuStableImageSsmName);
+```
+
+#### User-Data Script Structure
+```bash
+# 1. CloudFormation variables ONLY in environment file creation
+echo "AWS_REGION=${_AWS_REGION_}" >> /etc/cdk_environment
+
+# 2. Source environment immediately  
+source /etc/cdk_environment
+
+# 3. Use normal bash variables thereafter
+apt-get update
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+```
+
+#### CDK Variable Substitution
+```typescript
+const modifiedScript = cdk.Fn.sub(nodeStartScript, {
+    _AWS_REGION_: REGION,           // CloudFormation variables
+    _STACK_NAME_: STACK_NAME,       // with underscore prefix/suffix
+    _NEAR_VERSION_: nearVersion,    // passed to user-data script
+});
+```
+
+### ❌ Anti-Patterns (NEVER USE)
+
+#### CloudFormation Variable Mixing
+```bash
+# NEVER mix CloudFormation ${} syntax with bash variables
+# This causes "Unresolved resource dependencies" errors
+NEAR_HOME="/near/${NEAR_NETWORK}"  # ❌ CloudFormation interprets this
+NEAR_HOME="/near/$NEAR_NETWORK"    # ✅ Correct bash syntax
+```
+
+#### Package Installation Issues
+```bash
+# ❌ These DON'T work on Ubuntu 24.04
+apt-get install awscli python    # Packages don't exist
+
+# ✅ Correct Ubuntu installation methods  
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+apt-get install python3 python3-pip
+```
+
+#### Wrong Operating System
+```typescript
+// ❌ Amazon Linux - NEAR docs require apt/Ubuntu
+new ec2.AmazonLinuxImage({
+    generation: ec2.AmazonLinuxGeneration.AMAZON_LINUX_2023
+});
+
+// ✅ Ubuntu - Required for NEAR documentation compatibility
+ec2.MachineImage.fromSsmParameter(ubuntuStableImageSsmName);
+```
+
+## NEAR-Specific Requirements
+
+### Architecture Compatibility
+- **CPU**: x86_64 ONLY (ARM64 doesn't work with NEAR node code)
+- **Instance Type**: m7a.2xlarge or similar x86_64 instances
+- **Storage**: EBS gp3 volumes with appropriate IOPS
+
+### Binary Installation
+```bash
+# Download official NEAR binary releases
+NEAR_RELEASE_ASSET="near-$NEAR_VERSION-x86_64-unknown-linux-gnu.tar.gz"
+NEAR_DOWNLOAD_URL="https://github.com/near/nearcore/releases/download/$NEAR_VERSION/$NEAR_RELEASE_ASSET"
+```
+
+### Network Configuration
+```json
+// config.json - RPC node configuration
+{
+  "tracked_shards": [0]  // Track all shards for RPC functionality
+}
+```
+
+### Sync Strategy
+- **Preferred**: Epoch Sync (faster, lightweight, no snapshots needed)
+- **Legacy**: Snapshot-based sync (being deprecated by NEAR)
+
+## Deployment Commands
+
+### Standard Deployment
+```bash
+# Always use this profile and region
+export AWS_PROFILE=shai-sandbox-profile
+export AWS_ACCOUNT_ID=311843862895  
+export AWS_REGION=us-east-1
+
+# Deploy from /lib/near directory
+cd lib/near
+npx cdk deploy near-single-node --require-approval never
+```
+
+### Environment Setup
+```bash
+# Copy and modify environment file
+cp .env-sample .env
+# Ensure DEPLOY_MODE=single (not ha)
+sed -i '' 's/DEPLOY_MODE=ha/DEPLOY_MODE=single/' .env
+```
+
+## Debugging & Monitoring
+
+### CloudWatch Logs
+- Log Group: `/aws/ec2/user-data` 
+- Stream format: `YYYY-MM-DD_hostname_HH-MM-SS`
+
+### SSM Debugging Commands
+```bash
+# Check cloud-init status
+sudo cloud-init status --long
+
+# View user-data script output
+sudo tail -f /var/log/cloud-init-output.log
+
+# Check environment variables
+sudo cat /etc/cdk_environment
+
+# NEAR service status
+sudo systemctl status near.service
+sudo journalctl -u near.service -f
+```
+
+### Common Issues & Solutions
+
+#### Package Installation Failures
+- **Symptom**: `E: Package 'awscli' has no installation candidate`
+- **Solution**: Use curl method for AWS CLI installation
+
+#### CloudFormation Template Errors  
+- **Symptom**: `Unresolved resource dependencies [VARIABLE_NAME]`
+- **Solution**: Escape bash variables, use only `_PLACEHOLDER_` format in `cdk.Fn.sub`
+
+#### Architecture Mismatches
+- **Symptom**: NEAR binary fails to run
+- **Solution**: Ensure x86_64 instance types and binary downloads
+
+## Health Checks & Endpoints
+
+### Built-in Health Check
+- **URL**: `http://instance-ip:8080/health`
+- **Response**: JSON with service status and RPC readiness
+
+### NEAR RPC Endpoint  
+- **URL**: `http://instance-ip:3030/status`
+- **Purpose**: NEAR node status and sync progress
+
+## Security & Best Practices
+
+### IAM Permissions
+- CloudWatch Logs: Create/write permissions in common-stack.ts
+- S3 Asset Access: Granted to instance role
+- Systems Manager: Session Manager for secure access
+
+### Network Security
+- Security groups: SSH via SSM only, RPC internal only
+- No direct internet access to RPC ports
+- VPC: Uses default VPC with public subnets
+
+Remember: Always follow the proven Ubuntu + user-data patterns established in this project. When in doubt, refer to working Solana examples in `/lib/solana` for similar patterns.

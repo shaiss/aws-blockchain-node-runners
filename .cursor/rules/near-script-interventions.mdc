@@ -1,0 +1,229 @@
+---
+description: NEAR deployment script intervention patterns and CloudFormation timeout solutions
+---
+
+# NEAR Script Intervention Patterns
+
+## Script Intervention Methodology
+
+### Always Use ai-intervened.md for Logging
+**File**: [ai-intervened.md](mdc:lib/near/ai-intervened.md)
+**Purpose**: Track all interventions, issues, and fixes chronologically
+**Format**:
+```markdown
+### **HH:MM UTC - INTERVENTION #N: Brief Description**
+
+**Problem**: Specific technical issue
+**Symptoms**: Observable indicators  
+**Root Cause**: Technical analysis
+**Solution**: Steps taken
+**Status**: Success/failure with evidence
+```
+
+## Common Intervention Patterns
+
+### Intervention #1: Environment Variable Issues
+**Trigger**: "unbound variable" errors, script exits early
+**Pattern**:
+```bash
+# Create persistent environment file
+cat > /etc/near-environment << EOF
+AWS_REGION=us-east-1
+STACK_NAME=near-single-node
+NEAR_VERSION=v2.6.5
+NEAR_NETWORK=mainnet
+# ... other variables
+EOF
+
+# Source environment in new scripts
+source /etc/near-environment
+```
+
+### Intervention #2: Device Detection Bypass
+**Trigger**: Script stuck in `sleep 10` loop, volume already mounted
+**Pattern**:
+```bash
+# Skip device detection, proceed directly
+cd /near/mainnet  # Volume already mounted here
+# Continue with installation directly
+```
+
+### Intervention #3: Rust PATH Issues
+**Trigger**: "cargo: not found", PATH not preserved across SSM sessions
+**Pattern**:
+```bash
+# Use absolute paths instead of relying on PATH
+/root/.cargo/bin/cargo build -p neard --release
+
+# Create wrapper script with explicit PATH
+echo 'export PATH="/root/.cargo/bin:$PATH"' > /tmp/rust-env.sh
+source /tmp/rust-env.sh
+```
+
+### Intervention #4: Git Tag Corrections
+**Trigger**: "pathspec 'v2.6.5' did not match any file(s) known to git"
+**Pattern**:
+```bash
+# Check available tags first
+git tag | grep -E "2\.[56]\.[0-9]" | tail -10
+
+# Use tag without 'v' prefix
+git checkout 2.6.5  # Not v2.6.5
+```
+
+## SSM Command Patterns
+
+### Process Investigation
+```bash
+aws ssm send-command --instance-ids INSTANCE_ID --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["ps aux | grep PROCESS_NAME | grep -v grep","lsof -p PID_NUMBER 2>/dev/null | head -10","pstree -p PID_NUMBER 2>/dev/null"]' \
+  --timeout-seconds 30 --region us-east-1
+```
+
+### Log Analysis
+```bash
+aws ssm send-command --instance-ids INSTANCE_ID --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["echo \"Log size: $(wc -c < /var/log/LOGFILE.log) bytes\"","tail -20 /var/log/LOGFILE.log","grep -E \"(ERROR|FATAL|Failed)\" /var/log/LOGFILE.log | tail -5"]' \
+  --timeout-seconds 30 --region us-east-1
+```
+
+### Environment Debugging
+```bash
+aws ssm send-command --instance-ids INSTANCE_ID --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["env | grep -E \"(AWS_REGION|NEAR|STACK)\"","which cargo || echo \"cargo not found\"","echo \"PATH: $PATH\"","ls -la /root/.cargo/bin/ 2>/dev/null || echo \"Cargo bin not found\""]' \
+  --timeout-seconds 30 --region us-east-1
+```
+
+## CloudFormation Timeout Management
+
+### Root Cause: cfn-signal Timing
+**Problem**: NEAR compilation takes 45-60 minutes, CloudFormation times out waiting for cfn-signal
+**Default Timeout**: ~60 minutes for EC2 instance creation
+
+### Solution 1: Extend CloudFormation Timeout
+**File**: [lib/near/lib/single-node-stack.ts](mdc:lib/near/lib/single-node-stack.ts)
+```typescript
+// In instance creation, extend CreationPolicy
+const instance = new ec2.Instance(this, "instance", {
+  // ... other config
+});
+
+// Add explicit creation policy with extended timeout
+const cfnInstance = instance.node.defaultChild as ec2.CfnInstance;
+cfnInstance.cfnOptions.creationPolicy = {
+  resourceSignal: {
+    timeout: 'PT90M', // 90 minutes (PT = Period Time, M = Minutes)
+    count: 1,
+  },
+};
+```
+
+### Solution 2: Send Intermediate cfn-signal
+**Pattern**: Send success signal before compilation completes
+```bash
+# Send signal after volume mount but before compilation
+/opt/aws/bin/cfn-signal -e 0 --stack ${STACK_NAME} --resource ${NODE_CF_LOGICAL_ID} --region ${AWS_REGION}
+
+# Then continue with compilation in background
+nohup make release > /var/log/near-compile.log 2>&1 &
+```
+
+### Solution 3: Two-Stage Deployment
+**Approach**: Separate infrastructure from compilation
+1. Deploy EC2 instance + volume (quick)
+2. Run NEAR compilation as separate step (UserData or SSM)
+
+## Manual Recovery Procedures
+
+### Restart Stuck Compilation
+```bash
+# Terminate stuck processes
+pkill -f near-setup
+pkill -f cargo
+
+# Restart with fixed environment
+cd /near/mainnet/nearcore
+export PATH="/root/.cargo/bin:$PATH"
+nohup /root/.cargo/bin/cargo build -p neard --release > /var/log/manual-compile.log 2>&1 &
+```
+
+### Volume Recovery
+```bash
+# If volume detached, reattach manually
+aws ec2 attach-volume --volume-id VOLUME_ID --instance-id INSTANCE_ID --device /dev/sdf --region us-east-1
+
+# Wait for attachment
+sleep 10
+
+# Mount if not auto-mounted
+mkdir -p /near/mainnet
+mount /dev/nvme1n1 /near/mainnet
+```
+
+### Emergency cfn-signal
+```bash
+# Send success signal to prevent CloudFormation timeout
+aws cloudformation signal-resource \
+  --stack-name near-single-node \
+  --logical-resource-id nearsinglenode6D58BB0E \
+  --unique-id i-INSTANCE_ID \
+  --status SUCCESS \
+  --region us-east-1
+```
+
+## Success Validation Patterns
+
+### Compilation Active Indicators
+```bash
+# Multiple CPU-intensive rustc processes
+ps aux | grep rustc | grep -v grep
+# Expected: 2-5 rustc processes with 50%+ CPU
+
+# Growing log file
+wc -c /var/log/near-compile-absolute.log
+# Expected: >30KB after 10 minutes
+
+# Specific compilation phases
+tail -10 /var/log/near-compile-absolute.log | grep -E "(Compiling|cranelift|wasmtime)"
+# Expected: WASM/runtime components compiling
+```
+
+### Infrastructure Health
+```bash
+# Memory availability (should not exceed 25GB on 30GB instance)
+free -h | grep Mem
+
+# Volume mount status
+df -h /near/mainnet
+# Expected: 1007G total, <1% used initially
+
+# Process tree health (no stuck sleeps)
+ps aux | grep -E "(sleep|wait)" | grep near
+# Should be empty or brief sleeps
+```
+
+## Intervention Decision Tree
+
+1. **Process Running?** 
+   - No → Check logs, restart with fixed environment
+   - Yes → Continue to step 2
+
+2. **Log File Growing?**
+   - No → Process stuck, investigate with `lsof`, `strace`
+   - Yes → Continue to step 3
+
+3. **High CPU Usage?**
+   - No → Check if compilation started, look for Rust PATH issues
+   - Yes → Monitor progress, compilation proceeding normally
+
+4. **Volume Mounted?**
+   - No → Check volume attachment, manual attach if needed
+   - Yes → Proceed with script execution
+
+5. **Environment Variables Set?**
+   - No → Create environment file, source in scripts
+   - Yes → Check specific variables (AWS_REGION, NEAR_VERSION)
+
+6. **CloudFormation Timeout Risk?**
+   - High → Send cfn-signal early or extend timeout
+   - Low → Monitor compilation to completion

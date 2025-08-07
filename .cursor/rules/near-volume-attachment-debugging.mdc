@@ -1,0 +1,165 @@
+---
+description: NEAR data volume attachment debugging and shared construct workarounds
+---
+
+# NEAR Volume Attachment Debugging Guide
+
+## Volume Attachment Architecture
+
+### Shared Construct Bug (Critical Issue)
+**File**: `lib/constructs/single-node.ts` (NOT EDITABLE - core repo)
+**Problem**: Creates EBS volume but fails to attach reliably
+**Evidence**: Volume shows as "available" instead of "attached"
+
+### NEAR-Specific Workaround
+**File**: [lib/near/lib/single-node-stack.ts](mdc:lib/near/lib/single-node-stack.ts)
+**Strategy**: Bypass shared construct, implement explicit attachment
+
+```typescript
+// WORKAROUND: Empty dataVolumes array bypasses buggy shared construct
+const node = new SingleNodeConstruct(this, "near-single-node", {
+    dataVolumes: [], // Bypass shared construct volume bug
+    // ... other config
+});
+
+// Explicit volume creation in NEAR stack
+const nearDataVolume = new ec2.Volume(this, "near-data-volume-explicit", {
+    availabilityZone: chosenAvailabilityZone,
+    size: cdk.Size.gibibytes(dataVolume.sizeGiB),
+    volumeType: ec2.EbsDeviceVolumeType.GP3,
+    encrypted: true,
+    iops: dataVolume.iops,
+    throughput: dataVolume.throughput,
+});
+
+// Explicit attachment (works reliably)
+const volumeAttachment = new ec2.CfnVolumeAttachment(this, "near-data-volume-attachment", {
+    device: "/dev/sdf",  // Maps to /dev/nvme1n1 on NVMe instances
+    instanceId: node.instanceId,
+    volumeId: nearDataVolume.volumeId,
+});
+```
+
+## Debugging Commands
+
+### Check Volume Creation Status
+```bash
+aws cloudformation describe-stack-events --stack-name near-single-node \
+  --query 'StackEvents[?contains(LogicalResourceId, `volume`) || contains(LogicalResourceId, `Volume`)].[Timestamp,LogicalResourceId,ResourceStatus,ResourceStatusReason]' \
+  --output table --region us-east-1
+```
+
+### Check Volume Attachment Status  
+```bash
+aws ec2 describe-volumes --filters "Name=tag:aws:cloudformation:stack-name,Values=near-single-node" \
+  --query 'Volumes[*].[VolumeId,Size,State,Attachments[0].InstanceId,Attachments[0].Device,Attachments[0].State]' \
+  --output table --region us-east-1
+```
+
+### Verify Volume from Instance
+```bash
+aws ssm send-command --instance-ids INSTANCE_ID --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["echo \"=== VOLUME STATUS ===\",\"lsblk\",\"mount | grep nvme\",\"df -h | grep nvme\"]' \
+  --timeout-seconds 30 --region us-east-1
+```
+
+## Device Naming Patterns
+
+### AWS Device Naming Convention
+- **CDK Specification**: `/dev/sdf` (logical name)
+- **NVMe Mapping**: `/dev/nvme1n1` (actual device on NVMe instances like m7a.2xlarge)
+- **Root Device**: `/dev/nvme0n1` (always the boot volume)
+
+### Verification Script
+```bash
+# Check device mapping
+lsblk -d -n -o NAME,SIZE,TYPE | grep nvme
+
+# Expected output:
+# nvme0n1    46G disk    # Root volume
+# nvme1n1  1007G disk    # Data volume (if attached)
+```
+
+## Common Issues & Solutions
+
+### Issue 1: Volume Created but Not Attached
+**Symptoms**: 
+- CloudFormation shows volume CREATE_COMPLETE
+- No volume attachment events in CloudFormation
+- `lsblk` shows only root volume
+
+**Solution**: Manual attachment
+```bash
+aws ec2 attach-volume --volume-id VOLUME_ID --instance-id INSTANCE_ID --device /dev/sdf --region us-east-1
+```
+
+### Issue 2: Script Stuck in Device Detection
+**Symptoms**:
+- Process tree shows `sleep 10` loop
+- Zero progress in setup logs
+- Volume is actually mounted but script can't detect it
+
+**Root Cause**: Script looks for unformatted device, but volume may be pre-formatted
+**Solution**: Bypass device detection, use existing mount
+
+### Issue 3: CloudFormation Stack Deletion Fails
+**Symptoms**: `DELETE_FAILED` for data volume
+**Cause**: Manual volume attachment interferes with CloudFormation
+**Solution**:
+```bash
+aws ec2 detach-volume --volume-id VOLUME_ID --force --region us-east-1
+aws cloudformation delete-stack --stack-name STACK_NAME --region us-east-1
+```
+
+## Working Patterns (Reference from Other Blockchains)
+
+### Solana Implementation (Works Correctly)
+```typescript
+// From lib/solana/lib/single-node-stack.ts
+const node = new SingleNodeConstruct(this, "sync-node", {
+    dataVolumes: [accountsVolume, dataVolume], // ✅ Works correctly
+});
+```
+
+### Ethereum Implementation (Works Correctly)  
+```typescript
+// From lib/ethereum/lib/single-node-stack.ts
+const node = new SingleNodeConstruct(this, "single-node", {
+    dataVolumes: [dataVolume], // ✅ Works correctly
+});
+```
+
+**Key Insight**: The shared construct works for other blockchains, suggesting the bug may be timing-related or specific to NEAR's requirements.
+
+## Device Detection Troubleshooting
+
+### Dynamic Device Detection Function
+The [user-data-ubuntu.sh](mdc:lib/near/lib/assets/user-data-ubuntu.sh) includes a `wait_for_data_device()` function that:
+
+1. Waits up to 5 minutes for data volume
+2. Distinguishes between root and data devices  
+3. Checks for unformatted/unmounted devices
+4. Times out gracefully if volume not found
+
+### Bypass Strategy
+If device detection fails but volume is mounted:
+```bash
+# Skip detection, proceed directly to /near/mainnet
+cd /near/mainnet
+# Continue with NEAR installation
+```
+
+## Volume Performance Settings
+
+### GP3 Configuration (Optimal for NEAR)
+```typescript
+volumeType: ec2.EbsDeviceVolumeType.GP3,
+iops: dataVolume.iops,        // High IOPS for blockchain data
+throughput: dataVolume.throughput, // High throughput for sync
+encrypted: true,              // Security requirement
+```
+
+### Size Requirements
+- **Minimum**: 500GB for NEAR mainnet
+- **Recommended**: 1TB+ for growth headroom
+- **Current**: 1TB (1099511627776 bytes)

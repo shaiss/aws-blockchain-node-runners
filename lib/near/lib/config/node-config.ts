@@ -33,7 +33,6 @@ export const nodeConfig: configTypes.NearBaseNodeConfig & configTypes.NearHAConf
         iops: process.env.NEAR_DATA_VOL_IOPS ? parseInt(process.env.NEAR_DATA_VOL_IOPS) : 6000,
         throughput: process.env.NEAR_DATA_VOL_THROUGHPUT ? parseInt(process.env.NEAR_DATA_VOL_THROUGHPUT) : 250,
     },
-    snapshotUrl: process.env.SNAPSHOT_URL || constants.NoneValue,
     limitOutTrafficMbps: process.env.LIMIT_OUT_TRAFFIC_MBPS ? parseInt(process.env.LIMIT_OUT_TRAFFIC_MBPS) : 1000,
 
     // HA specific
@@ -41,7 +40,7 @@ export const nodeConfig: configTypes.NearBaseNodeConfig & configTypes.NearHAConf
     heartBeatDelayMin: process.env.HEARTBEAT_DELAY_MIN ? parseInt(process.env.HEARTBEAT_DELAY_MIN) : 60,
     numberOfNodes: process.env.NUMBER_OF_RPC_NODES ? parseInt(process.env.NUMBER_OF_RPC_NODES) : 2,
 
-    // base node config fields
-    instanceType: new ec2.InstanceType(process.env.NEAR_INSTANCE_TYPE || "m7g.2xlarge"),
-    instanceCpuType: process.env.CPU_TYPE?.toLowerCase() == "x86_64" ? ec2.AmazonLinuxCpuType.X86_64 : ec2.AmazonLinuxCpuType.ARM_64,
+    // base node config fields  
+    instanceType: new ec2.InstanceType(process.env.NEAR_INSTANCE_TYPE || "m7a.2xlarge"),
+    instanceCpuType: process.env.CPU_TYPE?.toLowerCase() == "arm_64" ? ec2.AmazonLinuxCpuType.ARM_64 : ec2.AmazonLinuxCpuType.X86_64,
 }; 

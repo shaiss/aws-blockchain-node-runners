@@ -58,6 +58,23 @@ export class NearCommonStack extends cdk.Stack {
             })
         );
 
+        // Add CloudWatch Logs permissions for user-data script logging
+        instanceRole.addToPolicy(
+            new iam.PolicyStatement({
+                resources: [
+                    `arn:aws:logs:${region}:${this.AWS_ACCOUNT_ID}:log-group:/aws/ec2/user-data`,
+                    `arn:aws:logs:${region}:${this.AWS_ACCOUNT_ID}:log-group:/aws/ec2/user-data:*`
+                ],
+                actions: [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream", 
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogStreams",
+                    "logs:DescribeLogGroups"
+                ],
+            })
+        );
+
         new cdk.CfnOutput(this, "Instance Role ARN", {
             value: instanceRole.roleArn,
             exportName: "NearNodeInstanceRoleArn",

@@ -84,7 +84,6 @@ export class NearRpcNodesStack extends cdk.Stack {
             _DATA_VOLUME_SIZE_: dataVolumeSizeBytes.toString(),
             _NEAR_VERSION_: nearVersion,
             _NEAR_NETWORK_: nearNetwork,
-            _SNAPSHOT_URL_: constants.NoneValue,
             _LIFECYCLE_HOOK_NAME_: lifecycleHookName,
             _ASG_NAME_: autoScalingGroupName,
             _LIMIT_OUT_TRAFFIC_MBPS_: limitOutTrafficMbps.toString(),
@@ -132,7 +131,7 @@ export class NearRpcNodesStack extends cdk.Stack {
                 { id: "AwsSolutions-AS3", reason: "No notifications needed" },
                 { id: "AwsSolutions-S1", reason: "No access log needed for ALB logs bucket" },
                 { id: "AwsSolutions-EC28", reason: "Using basic monitoring to save costs" },
-                { id: "AwsSolutions-IAM5", reason: "Need read access to the S3 bucket with assets" },
+                { id: "AwsSolutions-IAM5", reason: "Need GetObject, ListBucket access to the S3 bucket with assets" },
             ],
             true
         );

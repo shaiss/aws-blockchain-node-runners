@@ -1,0 +1,251 @@
+---
+description: NEAR CDK deployment strategy and best practices based on proven successful patterns
+---
+
+# NEAR CDK Deployment Strategy
+
+## Deployment Configuration
+
+### Required Profile and Region
+```bash
+# Always use this profile and region for NEAR deployments
+export AWS_PROFILE=shai-sandbox-profile
+export AWS_REGION=us-east-1
+export AWS_ACCOUNT_ID=311843862895
+
+# Deploy from correct directory
+cd lib/near
+npx cdk deploy near-single-node --profile shai-sandbox-profile --require-approval never
+```
+
+### Key Architecture Decisions (Proven Working)
+
+#### 1. Operating System: Ubuntu 24.04 LTS (Required)
+**Reasoning**: NEAR documentation specifically requires Ubuntu/apt package management
+**Configuration**: [lib/near/lib/single-node-stack.ts](mdc:lib/near/lib/single-node-stack.ts)
+```typescript
+let ubuntuStableImageSsmName = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id";
+const machineImage = ec2.MachineImage.fromSsmParameter(ubuntuStableImageSsmName);
+```
+
+#### 2. Instance Type: m7a.2xlarge (x86_64 Required)
+**Reasoning**: ARM64 doesn't work with NEAR node code, needs 8 cores + 30GB RAM for compilation
+**Performance**: 70%+ CPU utilization during compilation, 1-2GB per rustc process
+
+#### 3. Data Volume: 1TB GP3 with High IOPS
+**Reasoning**: Blockchain data growth, high I/O requirements for sync
+**Configuration**: 
+- Size: 1TB (1099511627776 bytes)
+- Type: GP3 with high IOPS and throughput
+- Encryption: Required for security
+
+## Volume Attachment Strategy (Critical Fix)
+
+### Problem with Shared Construct
+**File**: `lib/constructs/single-node.ts` (core repo, not editable)
+**Issue**: Creates volume but fails to attach reliably
+**Evidence**: Volume shows "available" instead of "attached"
+
+### NEAR-Specific Workaround
+**File**: [lib/near/lib/single-node-stack.ts](mdc:lib/near/lib/single-node-stack.ts)
+**Strategy**: Bypass shared construct, implement explicit attachment
+
+```typescript
+// PROVEN WORKING PATTERN:
+const node = new SingleNodeConstruct(this, "near-single-node", {
+    dataVolumes: [], // Empty array bypasses buggy shared construct
+    // ... other config
+});
+
+// Explicit volume creation and attachment (works reliably)
+const nearDataVolume = new ec2.Volume(this, "near-data-volume-explicit", {
+    availabilityZone: chosenAvailabilityZone,
+    size: cdk.Size.gibibytes(dataVolume.sizeGiB),
+    volumeType: ec2.EbsDeviceVolumeType.GP3,
+    encrypted: true,
+});
+
+const volumeAttachment = new ec2.CfnVolumeAttachment(this, "near-data-volume-attachment", {
+    device: "/dev/sdf",  // Maps to /dev/nvme1n1
+    instanceId: node.instanceId,
+    volumeId: nearDataVolume.volumeId,
+});
+```
+
+## Bootstrap Script Strategy
+
+### Minimal Bootstrap (in CDK)
+**Purpose**: Install essential tools and download main script
+**Size Limit**: <25KB (CloudFormation limit)
+**Required**:
+```bash
+# AWS CLI v2 installation (proven method)
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip -q awscliv2.zip
+./aws/install --update
+
+# Download main script from S3
+aws s3 cp "s3://BUCKET/SCRIPT.sh" /tmp/near-setup.sh
+chmod +x /tmp/near-setup.sh
+nohup /tmp/near-setup.sh > /var/log/near-setup.log 2>&1 &
+```
+
+### Main Setup Script (S3-hosted)
+**File**: [lib/near/lib/assets/user-data-ubuntu.sh](mdc:lib/near/lib/assets/user-data-ubuntu.sh)
+**Pattern**: Complex logic, environment handling, NEAR installation
+**Key Requirements**:
+- Rust installation with absolute paths
+- Git tag handling (use `2.6.5` not `v2.6.5`)
+- Volume detection with timeout
+- Environment variable persistence
+
+## CloudFormation Timeout Management
+
+### Current Issue
+**Timeout**: CloudFormation default ~60 minutes
+**NEAR Compilation**: 45-60+ minutes required
+**Result**: Stack rollback before compilation completes
+
+### Solution Options
+
+#### Option 1: Extend CloudFormation Timeout
+```typescript
+// Add to instance creation in single-node-stack.ts
+const cfnInstance = instance.node.defaultChild as ec2.CfnInstance;
+cfnInstance.cfnOptions.creationPolicy = {
+  resourceSignal: {
+    timeout: 'PT90M', // 90 minutes
+    count: 1,
+  },
+};
+```
+
+#### Option 2: Early cfn-signal (Recommended)
+```bash
+# Send signal after infrastructure setup, before compilation
+/opt/aws/bin/cfn-signal -e 0 --stack ${STACK_NAME} --resource ${NODE_CF_LOGICAL_ID} --region ${AWS_REGION}
+
+# Continue compilation in background
+nohup make release > /var/log/compile.log 2>&1 &
+```
+
+#### Option 3: Two-Stage Deployment
+1. Deploy infrastructure (EC2 + volume)
+2. Run NEAR compilation separately via SSM or UserData
+
+## Monitoring and Debugging
+
+### Essential Monitoring Commands
+```bash
+# Stack status
+aws cloudformation describe-stacks --stack-name near-single-node --region us-east-1
+
+# Instance status  
+aws ec2 describe-instances --filters "Name=tag:aws:cloudformation:stack-name,Values=near-single-node"
+
+# Volume attachment
+aws ec2 describe-volumes --filters "Name=tag:aws:cloudformation:stack-name,Values=near-single-node"
+
+# Process health via SSM
+aws ssm send-command --instance-ids INSTANCE_ID --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["ps aux | grep -E \"(near|cargo|rustc)\" | grep -v grep"]'
+```
+
+### Success Indicators
+1. **Volume Attachment**: `/dev/nvme1n1` visible in `lsblk`, mounted at `/near/mainnet`
+2. **Rust Installation**: `/root/.cargo/bin/cargo --version` works
+3. **Compilation Active**: Multiple rustc processes with 50%+ CPU
+4. **Log Growth**: >30KB log file after 10 minutes
+5. **System Health**: <25GB memory used, load < 8.0
+
+## Deployment Workflow
+
+### 1. Pre-deployment Cleanup
+```bash
+# Check for existing stack
+aws cloudformation describe-stacks --stack-name near-single-node --region us-east-1
+
+# Delete if needed (may require manual volume cleanup)
+aws cloudformation delete-stack --stack-name near-single-node --region us-east-1
+```
+
+### 2. Deploy Stack
+```bash
+cd lib/near
+npx cdk deploy near-single-node --profile shai-sandbox-profile --require-approval never
+```
+
+### 3. Monitor Deployment (First 10 minutes)
+```bash
+# Watch CloudFormation events
+aws cloudformation describe-stack-events --stack-name near-single-node --region us-east-1
+
+# Check instance status when available
+aws ec2 describe-instances --filters "Name=tag:aws:cloudformation:stack-name,Values=near-single-node"
+```
+
+### 4. Verify Volume Attachment (5-10 minutes)
+```bash
+# Check volume status
+aws ec2 describe-volumes --filters "Name=tag:aws:cloudformation:stack-name,Values=near-single-node"
+
+# Manual attachment if needed
+aws ec2 attach-volume --volume-id VOLUME_ID --instance-id INSTANCE_ID --device /dev/sdf
+```
+
+### 5. Monitor Script Progress (10+ minutes)
+```bash
+# Health check via SSM
+aws ssm send-command --instance-ids INSTANCE_ID --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["ps aux | grep near","df -h /near/mainnet","tail -10 /var/log/near-setup.log"]'
+```
+
+### 6. Intervene if Needed
+- Follow patterns in [near-script-interventions.mdc](mdc:.cursor/rules/near-script-interventions.mdc)
+- Log all interventions in [ai-intervened.md](mdc:lib/near/ai-intervened.md)
+- Use SSM for remote debugging and fixes
+
+### 7. Compilation Monitoring (45-60 minutes)
+```bash
+# Check compilation progress
+aws ssm send-command --instance-ids INSTANCE_ID --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["ps aux | grep rustc","tail -5 /var/log/near-compile-absolute.log"]'
+```
+
+## Environment Configuration
+
+### Required Environment Variables
+```bash
+AWS_REGION=us-east-1
+STACK_NAME=near-single-node  
+NEAR_VERSION=2.6.5  # Note: no 'v' prefix
+NEAR_NETWORK=mainnet
+DATA_VOLUME_TYPE=gp3
+```
+
+### Volume Path Mappings
+- **CDK Device**: `/dev/sdf`
+- **NVMe Mapping**: `/dev/nvme1n1` 
+- **Mount Point**: `/near/mainnet`
+- **Size**: 1TB (1007G usable)
+
+## Troubleshooting Quick Reference
+
+| Symptom | Likely Cause | Solution |
+|---------|-------------|----------|
+| Stack CREATE_FAILED | Volume attachment | Check volume status, manual attach |
+| Instance terminated | CloudFormation timeout | Extend timeout or early cfn-signal |
+| Script stuck in loop | Device detection failure | Bypass detection, use mounted volume |
+| "cargo not found" | Rust PATH issue | Use absolute paths `/root/.cargo/bin/cargo` |
+| Git checkout fails | Wrong tag format | Use `2.6.5` not `v2.6.5` |
+| Zero CPU usage | Process not started | Check logs, restart with fixed environment |
+
+## Success Validation
+
+### Final Success Criteria
+1. **CloudFormation**: Stack in CREATE_COMPLETE status
+2. **Instance**: Running state with SSM connectivity
+3. **Volume**: 1TB attached and mounted at `/near/mainnet`  
+4. **Compilation**: Active rustc processes with high CPU
+5. **Progress**: Growing log files with NEAR component compilation
+6. **Health**: System resources within normal ranges

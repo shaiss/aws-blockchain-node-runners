@@ -18,7 +18,7 @@ describe("NearSingleNodeStack", () => {
       nearNetwork: config.nodeConfig.nearNetwork,
       nearVersion: config.nodeConfig.nearVersion,
       dataVolume: config.nodeConfig.dataVolume,
-      snapshotUrl: config.nodeConfig.snapshotUrl,
+
       limitOutTrafficMbps: config.nodeConfig.limitOutTrafficMbps,
     });
 
