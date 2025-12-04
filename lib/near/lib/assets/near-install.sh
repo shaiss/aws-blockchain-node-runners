@@ -94,8 +94,9 @@ else
     log "Data volume already mounted"
 fi
 
-# Set NEAR_HOME for this network
-export NEAR_HOME="/near/$NEAR_NETWORK"
+# Set NEAR_HOME for this network (use dedicated data directory)
+export HOME="/root"
+export NEAR_HOME="/near/$NEAR_NETWORK/data"
 export PATH="/root/.cargo/bin:$PATH"
 
 ###############################
@@ -115,6 +116,8 @@ apt-get install -y \
     llvm \
     protobuf-compiler \
     jq \
+    base58 \
+    xxd \
     htop \
     unzip
 
@@ -128,7 +131,7 @@ log "Installing Rust toolchain"
 if ! command -v rustc &> /dev/null; then
     log "Installing Rust via rustup"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    source ~/.cargo/env
+    source /root/.cargo/env || true
     
     # Verify Rust installation
     rustc --version
@@ -146,6 +149,8 @@ export PATH="/root/.cargo/bin:$PATH"
 ###############################
 log "Downloading NEAR Protocol source code"
 
+# Ensure NEAR_HOME exists before use
+mkdir -p "$NEAR_HOME"
 cd "$NEAR_HOME"
 
 if [[ ! -d "nearcore" ]]; then
@@ -240,7 +245,26 @@ cd "$NEAR_HOME"
 # Initialize node if not already done
 if [[ ! -f "$NEAR_HOME/config.json" ]]; then
     log "Running neard init for $NEAR_NETWORK network"
-    /usr/local/bin/neard init --chain-id "$NEAR_NETWORK" --download-genesis
+    
+    # Run dynamic boot nodes script before neard init
+    log "Fetching dynamic boot nodes for $NEAR_NETWORK network"
+    if [[ -f "/tmp/dynamic-boot-nodes.sh" ]]; then
+        log "Running dynamic boot nodes script (source into current shell)"
+        # Load BOOT_NODES into current shell so it is available below
+        source /tmp/dynamic-boot-nodes.sh || true
+
+        # Check if BOOT_NODES variable was set successfully
+        if [[ -n "${BOOT_NODES:-}" ]]; then
+            log "Using dynamic boot nodes: $(echo "$BOOT_NODES" | cut -d',' -f1-3)..."
+            /usr/local/bin/neard --home "$NEAR_HOME" init --chain-id "$NEAR_NETWORK" --download-genesis --download-config rpc --boot-nodes "$BOOT_NODES"
+        else
+            log "WARNING: No dynamic boot nodes available, using default init"
+            /usr/local/bin/neard --home "$NEAR_HOME" init --chain-id "$NEAR_NETWORK" --download-genesis
+        fi
+    else
+        log "Dynamic boot nodes script not found, using default init"
+        /usr/local/bin/neard --home "$NEAR_HOME" init --chain-id "$NEAR_NETWORK" --download-genesis
+    fi
     
     log "NEAR node initialized successfully"
 else
@@ -255,6 +279,7 @@ if [[ -f "$NEAR_HOME/config.json" ]]; then
     # Show config summary
     log "Network config: $(jq -r '.chain_id' "$NEAR_HOME/config.json")"
     log "RPC settings: $(jq -r '.rpc' "$NEAR_HOME/config.json")"
+    log "Boot nodes count: $(jq -r '.network.boot_nodes' "$NEAR_HOME/config.json" | tr ',' '\n' | grep -c '^ed25519:' || true)"
 else
     log "ERROR: config.json not found after initialization"
     exit 1
@@ -276,7 +301,7 @@ Type=simple
 User=root
 WorkingDirectory=$NEAR_HOME
 Environment=NEAR_HOME=$NEAR_HOME
-ExecStart=/usr/local/bin/neard run
+ExecStart=/usr/local/bin/neard --home $NEAR_HOME run
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -306,7 +331,7 @@ cat > /usr/local/bin/near-health-check << 'EOF'
 #!/bin/bash
 # NEAR Node Health Check Script
 
-NEAR_HOME="${NEAR_HOME:-/near/mainnet}"
+NEAR_HOME="${NEAR_HOME:-/near/mainnet/data}"
 RPC_URL="http://localhost:3030"
 
 # Check if neard process is running

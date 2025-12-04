@@ -80,7 +80,7 @@ export class NearSyncStack extends cdk.Stack {
         const startSyncDoc = new ssm.CfnDocument(this, "near-start-sync", {
             documentType: "Command",
             documentFormat: "YAML",
-            name: `near-start-sync-${this.stackName}`,
+            name: `near-start-sync-${this.stackName}-v2`,
             content: {
                 schemaVersion: "2.2",
                 description: "Start NEAR Protocol node and begin state synchronization",
@@ -92,6 +92,24 @@ export class NearSyncStack extends cdk.Stack {
                     }
                 },
                 mainSteps: [
+                    {
+                        action: "aws:runShellScript",
+                        name: "waitForInstanceReady",
+                        inputs: {
+                            timeoutSeconds: "300",
+                            runCommand: [
+                                "#!/bin/bash",
+                                "set -euo pipefail",
+                                "echo '[SYNC-STACK] Waiting for instance to be fully ready...'",
+                                "sleep 30",
+                                "echo '[SYNC-STACK] Checking if NEAR installation is complete...'",
+                                "test -f /usr/local/bin/neard || { echo 'NEAR binary not ready yet, waiting...'; sleep 30; test -f /usr/local/bin/neard; }",
+                                "echo '[SYNC-STACK] Checking if environment file exists...'",
+                                "test -f /etc/near-environment || { echo 'Environment file not ready yet, waiting...'; sleep 30; test -f /etc/near-environment; }",
+                                "echo '[SYNC-STACK] Instance is ready for NEAR sync'"
+                            ]
+                        }
+                    },
                     {
                         action: "aws:runShellScript",
                         name: "startNearSync",
@@ -182,6 +200,7 @@ export class NearSyncStack extends cdk.Stack {
         });
 
         // Create Lambda function for automated health checks with enhanced NEAR API integration
+        // This Lambda uses SSM to execute commands ON the EC2 instance, not direct network access
         const healthCheckFunction = new cdk.aws_lambda.Function(this, "health-check-function", {
             runtime: cdk.aws_lambda.Runtime.PYTHON_3_9,
             handler: "index.handler",
@@ -200,6 +219,7 @@ def handler(event, context):
     
     try:
         # Get NEAR node status via SSM command on the instance
+        # These commands are executed ON the EC2 instance via SSM, so localhost:3030 works correctly
         try:
             # Run command to get comprehensive NEAR API data from the instance
             response = ssm.send_command(
@@ -207,17 +227,17 @@ def handler(event, context):
                 DocumentName='AWS-RunShellScript',
                 Parameters={
                     'commands': [
-                        # Get current block height and sync info
+                        # Get current block height and sync info (executed ON the instance)
                         'curl -s http://127.0.0.1:3030/status | jq -r ".sync_info.latest_block_height // 0"',
                         'curl -s http://127.0.0.1:3030/status | jq -r ".sync_info.syncing // false"',
                         'curl -s http://127.0.0.1:3030/status | jq -r ".uptime_sec // 0"',
                         'curl -s http://127.0.0.1:3030/status | jq -r ".protocol_version // 0"',
                         'curl -s http://127.0.0.1:3030/status | jq -r ".sync_info.syncing // false"',
-                        # Get network info
+                        # Get network info (executed ON the instance)
                         'curl -s http://127.0.0.1:3030/network_info | jq -r ".num_active_peers // 0"',
                         'curl -s http://127.0.0.1:3030/network_info | jq -r ".sent_bytes_per_sec // 0"',
                         'curl -s http://127.0.0.1:3030/network_info | jq -r ".received_bytes_per_sec // 0"',
-                        # Get service status
+                        # Get service status (executed ON the instance)
                         'systemctl is-active --quiet near.service && echo "active" || echo "inactive"',
                         # Get latest block from network for sync progress calculation
                         'curl -s https://rpc.mainnet.near.org/status | jq -r ".sync_info.latest_block_height // 0"',

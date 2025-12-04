@@ -32,16 +32,22 @@ export class NearInstallStack extends cdk.Stack {
             path: path.join(__dirname, "assets", "near-install.sh"),
         });
 
-        // Grant the instance access to the install script
+        // Upload the dynamic boot nodes script to S3
+        const dynamicBootNodesScript = new s3Assets.Asset(this, "dynamic-boot-nodes-script", {
+            path: path.join(__dirname, "assets", "dynamic-boot-nodes.sh"),
+        });
+
+        // Grant the instance access to the scripts
         const importedInstanceRoleArn = cdk.Fn.importValue("NearNodeInstanceRoleArn");
         const instanceRole = iam.Role.fromRoleArn(this, "instance-role", importedInstanceRoleArn);
         installScript.bucket.grantRead(instanceRole);
+        dynamicBootNodesScript.bucket.grantRead(instanceRole);
 
         // Create SSM document for NEAR installation
         const installDocument = new ssm.CfnDocument(this, "near-install-document", {
             documentType: "Command",
             documentFormat: "YAML",
-            name: `near-install-${this.stackName}`,
+            name: `near-install-${this.stackName}-v2`,
             content: {
                 schemaVersion: "2.2",
                 description: "Install NEAR Protocol dependencies, Rust, and compile neard binary",
@@ -52,7 +58,7 @@ export class NearInstallStack extends cdk.Stack {
                         default: nearVersion
                     },
                     nearNetwork: {
-                        type: "String", 
+                        type: "String",
                         description: "NEAR network (mainnet/testnet)",
                         default: nearNetwork
                     },
@@ -63,9 +69,35 @@ export class NearInstallStack extends cdk.Stack {
                     installScriptKey: {
                         type: "String",
                         description: "S3 key for install script"
+                    },
+                    dynamicBootNodesScriptBucket: {
+                        type: "String",
+                        description: "S3 bucket containing dynamic boot nodes script"
+                    },
+                    dynamicBootNodesScriptKey: {
+                        type: "String",
+                        description: "S3 key for dynamic boot nodes script"
                     }
                 },
                 mainSteps: [
+                    {
+                        action: "aws:runShellScript",
+                        name: "waitForInstanceReady",
+                        inputs: {
+                            timeoutSeconds: "300",
+                            runCommand: [
+                                "#!/bin/bash",
+                                "set -euo pipefail",
+                                "echo '[INSTALL-STACK] Waiting for instance to be fully ready...'",
+                                "sleep 30",
+                                "echo '[INSTALL-STACK] Checking if AWS CLI is available...'",
+                                "which aws || { echo 'AWS CLI not ready yet, waiting...'; sleep 30; which aws; }",
+                                "echo '[INSTALL-STACK] Checking if environment file exists...'",
+                                "test -f /etc/near-environment || { echo 'Environment file not ready yet, waiting...'; sleep 30; test -f /etc/near-environment; }",
+                                "echo '[INSTALL-STACK] Instance is ready for NEAR installation'"
+                            ]
+                        }
+                    },
                     {
                         action: "aws:runShellScript",
                         name: "downloadInstallScript",
@@ -78,6 +110,21 @@ export class NearInstallStack extends cdk.Stack {
                                 "aws s3 cp s3://{{installScriptBucket}}/{{installScriptKey}} /tmp/near-install.sh",
                                 "chmod +x /tmp/near-install.sh",
                                 "echo '[INSTALL-STACK] Install script downloaded successfully'"
+                            ]
+                        }
+                    },
+                    {
+                        action: "aws:runShellScript",
+                        name: "downloadDynamicBootNodesScript",
+                        inputs: {
+                            timeoutSeconds: "300",
+                            runCommand: [
+                                "#!/bin/bash",
+                                "set -euo pipefail",
+                                "echo '[INSTALL-STACK] Downloading dynamic boot nodes script from S3'",
+                                "aws s3 cp s3://{{dynamicBootNodesScriptBucket}}/{{dynamicBootNodesScriptKey}} /tmp/dynamic-boot-nodes.sh",
+                                "chmod +x /tmp/dynamic-boot-nodes.sh",
+                                "echo '[INSTALL-STACK] Dynamic boot nodes script downloaded successfully'"
                             ]
                         }
                     },
@@ -109,7 +156,9 @@ export class NearInstallStack extends cdk.Stack {
                 nearVersion: [nearVersion],
                 nearNetwork: [nearNetwork],
                 installScriptBucket: [installScript.s3BucketName],
-                installScriptKey: [installScript.s3ObjectKey]
+                installScriptKey: [installScript.s3ObjectKey],
+                dynamicBootNodesScriptBucket: [dynamicBootNodesScript.s3BucketName],
+                dynamicBootNodesScriptKey: [dynamicBootNodesScript.s3ObjectKey]
             },
             applyOnlyAtCronInterval: false,
             maxConcurrency: "1",
